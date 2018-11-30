@@ -12,4 +12,11 @@ public class EsHelperTest {
         ElasticSearchHelper helper = ElasticSearchHelper.getInstance();
         System.out.println(helper.getClusterHealth().toString());
     }
+
+    @Test
+    public void deleteByType() {
+        ElasticSearchHelper helper = ElasticSearchHelper.getInstance();
+        long count = helper.delete("sdmap", "f_poi");
+        System.out.println(count);
+    }
 }

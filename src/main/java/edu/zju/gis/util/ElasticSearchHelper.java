@@ -6,8 +6,8 @@ import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest;
-import org.elasticsearch.action.admin.indices.exists.types.TypesExistsRequest;
 import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
+import org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkRequestBuilder;
 import org.elasticsearch.action.bulk.BulkResponse;
@@ -24,6 +24,8 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.index.reindex.DeleteByQueryAction;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.transport.client.PreBuiltTransportClient;
@@ -53,13 +55,10 @@ public final class ElasticSearchHelper implements Closeable {
         static {
             CommonSetting setting = CommonSetting.getInstance();
             try {
-                instance = new ElasticSearchHelper(setting.get("es.host"),
-                        Integer.parseInt(setting.get("es.port")),
-                        setting.get("es.name")
-                );
+                instance = new ElasticSearchHelper(setting.getEsHosts(), setting.getEsPort(), setting.getEsName());
             } catch (IOException e) {
-                log.error("读取配置文件config.properties异常", e);
-                throw new RuntimeException("读取配置文件config.properties异常", e);
+                log.error("ElasticSearchHelper初始化失败", e);
+                throw new RuntimeException("ElasticSearchHelper初始化失败", e);
             }
         }
     }
@@ -68,12 +67,13 @@ public final class ElasticSearchHelper implements Closeable {
         return InstanceHolder.instance;
     }
 
-    public ElasticSearchHelper(String host, int port, String clusterName) throws UnknownHostException {
+    public ElasticSearchHelper(List<String> hosts, int port, String clusterName) throws UnknownHostException {
         Settings settings = Settings.builder()
                 .put("cluster.name", clusterName)
                 .put("client.transport.sniff", true).build();
-        this.client = new PreBuiltTransportClient(settings)
-                .addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(host), port));
+        this.client = new PreBuiltTransportClient(settings);
+        for (String host : hosts)
+            ((PreBuiltTransportClient) this.client).addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(host), port));
     }
 
     public Client getClient() {
@@ -90,23 +90,18 @@ public final class ElasticSearchHelper implements Closeable {
     /**
      * 判断索引是否存在
      *
-     * @param indices 索引名数组
+     * @param index 索引名数组
      * @return 当且仅当所有索引都存在时返回true
      */
-    public boolean exists(String... indices) {
-        return client.admin().indices().exists(new IndicesExistsRequest(indices)).actionGet().isExists();
+    public boolean exists(String index) {
+        return client.admin().indices().exists(new IndicesExistsRequest(index)).actionGet().isExists();
     }
 
-    public boolean exists(String[] indices, String... types) {
-        return client.admin().indices().typesExists(new TypesExistsRequest(indices, types)).actionGet().isExists();
+    public boolean exists(String index, String... types) {
+        return client.admin().indices().prepareTypesExists(index).setTypes(types).get().isExists();
     }
 
-    /**
-     * 创建索引
-     *
-     * @return true-创建成功
-     */
-    public boolean createIndexIfNotExist(String index) throws IOException {
+    public boolean createIfNotExist(String index, int shards, int replicas) throws IOException {
         if (exists(index))
             return true;
         XContentBuilder settings = XContentFactory.jsonBuilder().startObject()
@@ -116,10 +111,34 @@ public final class ElasticSearchHelper implements Closeable {
                 .startObject("ik_smart").field("tokenizer", "ik_smart").endObject()
                 .endObject()
                 .endObject()
-                .field("number_of_shards", CommonSetting.getInstance().get("es.number_of_shards"))
-                .field("number_of_replicas", CommonSetting.getInstance().get("es.number_of_replicas"))
+                .field("number_of_shards", shards)
+                .field("number_of_replicas", replicas)
                 .endObject();
-        return client.admin().indices().create(new CreateIndexRequest(index).settings(settings)).actionGet().isAcknowledged();
+        return client.admin().indices().create(new CreateIndexRequest(index).settings(settings)).actionGet().isShardsAcked();
+    }
+
+    public boolean createIfNotExist(String index, int shards, int replicas, Map<String, String> mappings) throws IOException {
+        if (exists(index))
+            return true;
+        XContentBuilder settings = XContentFactory.jsonBuilder().startObject()
+                .startObject("analysis")
+                .startObject("analyzer")
+                .startObject("ik_max_word").field("tokenizer", "ik_max_word").endObject()
+                .startObject("ik_smart").field("tokenizer", "ik_smart").endObject()
+                .endObject()
+                .endObject()
+                .field("number_of_shards", shards)
+                .field("number_of_replicas", replicas)
+                .endObject();
+        CreateIndexRequest request = new CreateIndexRequest(index).settings(settings);
+        for (Map.Entry<String, String> mapping : mappings.entrySet()) {
+            request.mapping(mapping.getKey(), mapping.getValue(), XContentType.JSON);
+        }
+        return client.admin().indices().create(request).actionGet().isShardsAcked();
+    }
+
+    public PutMappingResponse putMapping(String indice, String type, String source) {
+        return client.admin().indices().preparePutMapping(indice).setType(type).setSource(source, XContentType.JSON).get();
     }
 
     public List<String> getAsString(String index, String type, int offset, int size) throws ExecutionException, InterruptedException {
@@ -135,7 +154,7 @@ public final class ElasticSearchHelper implements Closeable {
 
     public List<Map<String, Object>> getAsMap(String index, String type, int offset, int size) throws ExecutionException, InterruptedException {
         SearchResponse response = client.prepareSearch(index).setTypes(type).setFrom(offset).setSize(size)
-                .setTimeout(TimeValue.timeValueMinutes(8)).execute().get();
+                .setTimeout(TimeValue.timeValueSeconds(10)).execute().get();
         SearchHits hits = response.getHits();
         List<Map<String, Object>> map = new ArrayList<>();
         for (SearchHit hit : hits) {
@@ -281,6 +300,85 @@ public final class ElasticSearchHelper implements Closeable {
         return error;
     }
 
+    /**
+     * 更新索引
+     *
+     * @param type    索引类型
+     * @param kvIdDoc id=>json字符串或Map
+     */
+    public int updateFromJson(String index, String type, Map<String, String> kvIdDoc) {
+        BulkRequestBuilder bulkRequest = client.prepareBulk();
+        int error = 0;
+        for (Map.Entry<String, String> entry : kvIdDoc.entrySet()) {
+            bulkRequest.add(client.prepareUpdate(index, type, entry.getKey()).setDoc(entry.getValue(), XContentType.JSON));
+        }
+        BulkResponse bulkResponse = bulkRequest.get();
+        if (bulkResponse.hasFailures()) {
+            for (BulkItemResponse response : bulkResponse) {
+                if (response.isFailed())
+                    error++;
+            }
+        }
+        return error;
+    }
+
+    /**
+     * 更新索引
+     *
+     * @param type    索引类型
+     * @param kvIdDoc id=>json字符串或Map
+     */
+    public int updateFromMap(String index, String type, Map<String, Map<String, Object>> kvIdDoc) {
+        BulkRequestBuilder bulkRequest = client.prepareBulk();
+        int error = 0;
+        for (Map.Entry<String, Map<String, Object>> entry : kvIdDoc.entrySet()) {
+            bulkRequest.add(client.prepareUpdate(index, type, entry.getKey()).setDoc(entry.getValue()));
+        }
+        BulkResponse bulkResponse = bulkRequest.get();
+        if (bulkResponse.hasFailures()) {
+            for (BulkItemResponse response : bulkResponse) {
+                if (response.isFailed())
+                    error++;
+            }
+        }
+        return error;
+    }
+
+    public UpdateResponse upsert(String index, String type, String id, Map<String, Object> doc) {
+        return client.prepareUpdate(id, type, id).setUpsert(doc).get();
+    }
+
+    public int upsert(String index, String type, Map<String, Map<String, Object>> kvIdDoc) {
+        BulkRequestBuilder bulkRequest = client.prepareBulk();
+        int error = 0;
+        for (Map.Entry<String, Map<String, Object>> entry : kvIdDoc.entrySet()) {
+            bulkRequest.add(client.prepareUpdate(index, type, entry.getKey()).setUpsert(entry.getValue()));
+        }
+        BulkResponse bulkResponse = bulkRequest.get();
+        if (bulkResponse.hasFailures()) {
+            for (BulkItemResponse response : bulkResponse) {
+                if (response.isFailed())
+                    error++;
+            }
+        }
+        return error;
+    }
+
+    public boolean delete(String... indices) {
+        return client.admin().indices().prepareDelete(indices).get().isAcknowledged();
+    }
+
+    /**
+     * @param indice 索引名
+     * @param type   索引type
+     * @return 删除的记录数
+     */
+    public long delete(String indice, String type) {
+        return DeleteByQueryAction.INSTANCE.newRequestBuilder(client).source(indice)
+                .filter(QueryBuilders.typeQuery(type)).get().getDeleted();
+    }
+
+
     public DeleteResponse delete(String index, String type, String id) {
         return client.prepareDelete(index, type, id).get();
     }
@@ -297,10 +395,6 @@ public final class ElasticSearchHelper implements Closeable {
         return error;
     }
 
-    /**
-     * @return void
-     * @Comments lianggang
-     */
     public String getDetail(String index, String type, String docId) {
         GetResponse getResponse = client.prepareGet(index, type, docId).get();
         return getResponse.getSourceAsString();
@@ -333,8 +427,6 @@ public final class ElasticSearchHelper implements Closeable {
 
         /**
          * 执行创建索引类型映射，对已存在的映射直接跳过
-         *
-         * @return
          */
         public boolean mapping() {
             if (!exists(index))
