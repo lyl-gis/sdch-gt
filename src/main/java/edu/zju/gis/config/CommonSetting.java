@@ -47,10 +47,10 @@ public class CommonSetting {
 
         static {
             Properties props = new Properties();
-            setting = new CommonSetting(props);
             try {
                 InputStream is = ClassLoader.getSystemResourceAsStream("config.properties");
                 props.load(is);
+                setting = new CommonSetting(props);
             } catch (IOException e) {
                 throw new RuntimeException("读取配置文件config.properties异常", e);
             }

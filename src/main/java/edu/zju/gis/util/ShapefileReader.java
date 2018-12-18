@@ -1,7 +1,6 @@
 package edu.zju.gis.util;
 
 import org.geotools.data.shapefile.ShapefileDataStore;
-import org.geotools.data.shapefile.ShapefileDataStoreFactory;
 import org.geotools.data.simple.SimpleFeatureCollection;
 import org.geotools.data.simple.SimpleFeatureSource;
 import org.opengis.feature.simple.SimpleFeatureType;
@@ -22,13 +21,12 @@ import java.util.stream.Collectors;
  * @version 1.0 2018/11/13
  */
 public class ShapefileReader implements Closeable {
-    private static ShapefileDataStoreFactory dataStoreFactory = new ShapefileDataStoreFactory();
     private ShapefileDataStore dataStore;
     private SimpleFeatureSource featureSource;
     private CoordinateReferenceSystem crs;
 
     public ShapefileReader(File path, Charset charset) throws IOException {
-        dataStore = (ShapefileDataStore) dataStoreFactory.createDataStore(path.toURI().toURL());
+        dataStore = new ShapefileDataStore(path.toURI().toURL());
         dataStore.setCharset(charset);//设置编码，防止中文读取乱码
         featureSource = dataStore.getFeatureSource();
         crs = dataStore.getSchema().getCoordinateReferenceSystem();

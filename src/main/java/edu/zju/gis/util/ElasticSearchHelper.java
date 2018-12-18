@@ -7,7 +7,6 @@ import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest;
 import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
-import org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkRequestBuilder;
 import org.elasticsearch.action.bulk.BulkResponse;
@@ -15,11 +14,12 @@ import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.action.update.UpdateResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.InetSocketTransportAddress;
+import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
@@ -73,7 +73,7 @@ public final class ElasticSearchHelper implements Closeable {
                 .put("client.transport.sniff", true).build();
         this.client = new PreBuiltTransportClient(settings);
         for (String host : hosts)
-            ((PreBuiltTransportClient) this.client).addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(host), port));
+            ((PreBuiltTransportClient) this.client).addTransportAddress(new TransportAddress(InetAddress.getByName(host), port));
     }
 
     public Client getClient() {
@@ -137,7 +137,7 @@ public final class ElasticSearchHelper implements Closeable {
         return client.admin().indices().create(request).actionGet().isShardsAcked();
     }
 
-    public PutMappingResponse putMapping(String indice, String type, String source) {
+    public AcknowledgedResponse putMapping(String indice, String type, String source) {
         return client.admin().indices().preparePutMapping(indice).setType(type).setSource(source, XContentType.JSON).get();
     }
 
